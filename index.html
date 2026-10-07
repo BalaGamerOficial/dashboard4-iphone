@@ -22,6 +22,17 @@
     <button id="sync" class="icon-button" aria-label="Sincronizar ahora" title="Sincronizar ahora">↻</button>
   </header>
   <div id="sync-status" class="sync-status" role="status" aria-live="polite">Cargando copia local…</div>
+  <section id="installation" class="installation" hidden aria-label="Instalar Dashboard4">
+    <div class="card">
+      <span class="eyebrow">Instalar una sola vez</span>
+      <h2>Tu Dashboard4, siempre a mano</h2>
+      <p id="installation-state" class="meta">Enlaza este iPhone y espera a que termine la descarga.</p>
+      <ol><li>En Safari, toca <strong>Compartir</strong>.</li><li>Elige <strong>Añadir a pantalla de inicio</strong> y deja «Abrir como app» activado.</li><li>Abre el nuevo icono y espera a <strong>Lista sin conexión</strong>.</li></ol>
+      <button id="prepare-installation" class="button wide" disabled>Preparar instalación con acceso guardado</button>
+      <button id="copy-installation" class="button secondary wide" disabled>Copiar enlace de recuperación</button>
+      <p class="note">Si tienes el icono de la primera versión, sustitúyelo por este después de comprobar que funciona.</p>
+    </div>
+  </section>
   <main id="app" tabindex="-1"></main>
   <nav class="tabs" aria-label="Secciones">
     <button data-tab="home" aria-current="page"><span>⌂</span>Hoy</button>

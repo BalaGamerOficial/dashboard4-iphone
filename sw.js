@@ -1,5 +1,37 @@
-const CACHE = "dashboard4-iphone-aaf5d5f1da715d80";
-const SHELL = ["./", "./index.html", "./app.css", "./app.mjs", "./model.mjs", "./protocol.mjs", "./source.json", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
+const CACHE = "dashboard4-iphone-a22512fd07fae444";
+const SHELL = ["./", "./index.html", "./app.css", "./app.mjs", "./model.mjs", "./protocol.mjs", "./session.mjs", "./source.json", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
+
+function readDeviceKey() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("dashboard4-iphone", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("local");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const read = db.transaction("local").objectStore("local").get("pairingKey");
+      read.onsuccess = () => { db.close(); resolve(read.result); };
+      read.onerror = () => { db.close(); reject(read.error); };
+    };
+  });
+}
+
+async function deviceManifest() {
+  const key = await readDeviceKey();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(key || "")) return new Response("Enlaza primero este dispositivo.", { status: 401 });
+  const cache = await caches.open(CACHE);
+  const template = await cache.match("./manifest.webmanifest");
+  const manifest = await template.json();
+  const scope = self.registration.scope;
+  // Generated only inside this device's SW. There is no private manifest file
+  // on the server. The saved launch URL carries a fragment, never an HTTP key.
+  manifest.id = scope;
+  manifest.scope = scope;
+  manifest.start_url = `${scope}#k=${key}`;
+  manifest.icons = manifest.icons.map((icon) => ({ ...icon, src: new URL(icon.src, scope).href }));
+  return new Response(JSON.stringify(manifest), { headers: {
+    "Content-Type": "application/manifest+json", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+  } });
+}
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });
@@ -9,6 +41,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== self.location.origin || url.pathname.endsWith("/snapshot.json")) return;
+  if (url.pathname === new URL("private-install.webmanifest", self.registration.scope).pathname) {
+    // Never fall back to the network or cache a response containing the key.
+    event.respondWith(deviceManifest().catch(() => new Response("No se pudo preparar la instalación.", { status: 503 })));
+    return;
+  }
   if (event.request.mode === "navigate") {
     // The complete static shell opens immediately even if the Mac and network
     // are unavailable. Updates arrive atomically through the next SW install.

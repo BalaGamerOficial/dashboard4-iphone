@@ -4,7 +4,6 @@
   "short_name": "Dashboard4",
   "description": "Calendario, notas, tareas y apuntes con copia local sin conexión.",
   "lang": "es",
-  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f6f7fb",

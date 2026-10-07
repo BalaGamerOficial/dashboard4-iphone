@@ -1,5 +1,6 @@
 import { decryptSnapshot, importPairingKey } from "./protocol.mjs";
 import { allEvents, nextEvents, gradeSummary, effectiveGrade, dayKey, safeURL, escapeHTML as h } from "./model.mjs";
+import { isPairingKey, keyFromLink, installationURL, readRecovery, writeRecovery, recoveryStorage } from "./session.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const app = $("#app");
@@ -7,12 +8,17 @@ const status = $("#sync-status");
 const dateFormat = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "short" });
 const fullDate = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "numeric", month: "long" });
 const timeFormat = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" });
-let db, snapshot, envelope, pairingKey, syncing = false, offlineReady = false, persistent = false;
+let db, snapshot, envelope, pairingKey, syncing = false, offlineReady = false, persistent = false, installationPrepared = false;
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+const recoveryStore = recoveryStorage(window);
 let tab = "home", selectedDay = dayKey(new Date()), taskFilter = "pending", subjectFilter = "all", query = "", currentDocument;
-let pairingCandidate = new URLSearchParams(location.hash.slice(1)).get("k");
+const openingFragment = new URLSearchParams(location.hash.slice(1));
+let pairingCandidate = openingFragment.get("k");
+let installationMode = !standalone && (openingFragment.get("install") === "1" || isPairingKey(pairingCandidate));
 let snapshotURL;
-// Remove the key from browser history immediately, before links are opened.
-if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+// During installation the fragment is intentionally kept so Safari's launch
+// URL fallback also carries the key. Standalone launches remove it at once.
+if (location.hash && !installationMode) history.replaceState(null, "", location.pathname + location.search);
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -32,6 +38,7 @@ function readLocal(key) {
 }
 
 function writeLocal(entries) {
+  if (!db) return Promise.reject(new Error("El almacenamiento del iPhone no está disponible."));
   return new Promise((resolve, reject) => {
     const transaction = db.transaction("local", "readwrite");
     const store = transaction.objectStore("local");
@@ -61,7 +68,7 @@ function taskCard(task) {
   return `<details class="card"><summary>${h(task.title)}</summary><p class="meta">${h(subjectName(task.subjectId))} · ${h(fmtDate(task.dueDate))} · ${h(task.estimatedMinutes || 0)} min</p><div class="subject-actions">${taskBadge(task)}${task.priority === "high" ? '<span class="badge high">Prioridad alta</span>' : ""}</div>${task.notes ? `<p class="detail">${h(task.notes)}</p>` : ""}</details>`;
 }
 function installInstructions() {
-  return `<ol><li>Abre el enlace privado de tu Mac en <strong>Safari</strong>.</li><li>Toca <strong>Compartir → Añadir a pantalla de inicio</strong> y activa «Abrir como app» si aparece.</li><li>Abre Dashboard4 desde el nuevo icono. Si pide enlazar, pega aquí el mismo enlace privado.</li><li>Espera a que aparezca <strong>«Lista sin conexión»</strong>. Ya puedes apagar el Mac.</li></ol>`;
+  return `<ol><li>Abre tu enlace privado en <strong>Safari</strong> y espera a <strong>«Instalación preparada»</strong>.</li><li>Toca <strong>Compartir → Añadir a pantalla de inicio</strong> y deja «Abrir como app» activado.</li><li>Abre el nuevo icono y espera a <strong>«Lista sin conexión»</strong>.</li></ol>`;
 }
 function pairingForm() {
   return `<label for="pairing-input">Enlace privado o clave de tu Mac</label><input id="pairing-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pega tu enlace de instalación"><button class="button wide" data-action="pair">Enlazar este iPhone</button><p class="note">El enlace abre tu copia cifrada. Consérvalo en un lugar privado.</p>`;
@@ -118,16 +125,16 @@ function libraryPage() {
     `<details class="card"><summary>Catálogo PoliformaT · ${snapshot.resources.length} recursos</summary><p class="note">El texto extraído disponible aparece arriba. Los PDF originales y los vídeos se conservan en el Mac.</p>${snapshot.resources.filter((r) => r.type !== "collection").slice(0, 100).map((r) => `<p class="meta">${h(r.title)} · ${h(r.siteName)}</p>`).join("")}</details>`;
 }
 function settingsPage() {
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   return pageTitle("Siempre contigo.", "Copia local, instalación y estado de la sincronización.") +
     `<div class="card"><span class="eyebrow">Tu copia</span><h2>${snapshot ? "Guardada en este iPhone" : "Pendiente de enlazar"}</h2><p class="meta status-line">${snapshot ? `Publicada por el Mac: ${h(fmtDate(snapshot.exportedAt))} a las ${h(fmtTime(snapshot.exportedAt))}` : "Enlaza el iPhone con la clave privada de tu Mac."}</p><p class="meta">${offlineReady ? "Lista sin conexión · app y datos descargados" : "Preparando la app para usarla sin conexión…"}</p><p class="meta">${persistent ? "Almacenamiento persistente concedido por Safari" : "Persistencia sujeta al almacenamiento de iOS"}</p><button class="button wide" data-action="sync">Sincronizar ahora</button><button class="button secondary wide" data-action="persist">Proteger almacenamiento local</button><p class="note">El Mac publica al abrir Dashboard4 y mientras está abierto. El iPhone descarga al abrir esta app, al volver a ella y cada minuto mientras está visible. Si no hay red, conserva la última copia buena.</p></div>` +
-    `<div class="card"><h2>${standalone ? "Instalada como app" : "Instalar en el iPhone"}</h2>${installInstructions()}<p class="note">No usa certificados de desarrollador ni renovaciones semanales. iOS puede borrar datos si eliminas la app o liberas su almacenamiento: exporta una copia a Archivos como respaldo.</p></div>` +
+    `<div class="card"><h2>${standalone ? "Instalada como app" : "Instalar en el iPhone"}</h2>${standalone ? '<p class="note">El acceso se guarda en este dispositivo y se recupera desde el enlace del icono.</p>' : installInstructions() + '<button class="button wide" data-action="install">Preparar instalación</button>'}<p class="note">No usa certificados de desarrollador ni renovaciones semanales. iOS puede borrar datos si eliminas la app o liberas su almacenamiento: exporta una copia a Archivos como respaldo.</p></div>` +
     `<div class="card"><h2>Respaldo en Archivos</h2><p class="note">La copia exportada está cifrada. Para restaurarla necesitas también tu enlace privado.</p><button class="button secondary wide" data-action="export"${!envelope ? " disabled" : ""}>Exportar copia cifrada</button><button class="button secondary wide" data-action="import">Importar copia cifrada</button></div>` +
     `<details class="card"><summary>Enlazar o cambiar de copia</summary>${pairingForm()}</details>` +
     (snapshot ? heading("Avisos PoliformaT") + snapshot.announcements.slice().reverse().map((a) => `<details class="card"><summary>${h(a.title)}</summary><p class="meta">${h(a.siteName)} · ${h(fmtDate(a.createdAt))}</p><p class="detail">${h(a.body)}</p></details>`).join("") + heading("Trámites") + (snapshot.academic.procedures.map((p) => `<details class="card"><summary>${h(p.name)}</summary><p class="meta">${h(p.status)} · ${h(fmtDate(p.deadline))}</p><p class="detail">${h(p.requiredDocuments)}\n${h(p.notes)}</p>${link(p.url, "Abrir trámite")}</details>`).join("") || empty("Sin trámites", "No hay gestiones registradas en la copia.")) : "");
 }
 
 function render() {
+  updateInstallationPanel();
   if (snapshot) $("#course").textContent = `UPV · ${snapshot.academic.settings.academicYear}`;
   if (!snapshot && tab !== "settings") {
     app.innerHTML = pageTitle("Tu Mac, en el bolsillo.", "Una copia de Dashboard4 que abre incluso sin conexión.") +
@@ -142,10 +149,14 @@ async function acceptEnvelope(incoming, candidate = pairingKey, allowOlder = fal
   if (!allowOlder && snapshot && Date.parse(next.exportedAt) < Date.parse(snapshot.exportedAt)) {
     throw new Error("El servidor devolvió una copia anterior. Se conserva la del iPhone.");
   }
-  if (!db) throw new Error("El almacenamiento local no está disponible.");
   // Commit key, ciphertext and validated data together. A quota failure or a
   // wrong pairing key must never replace a good local snapshot.
-  await writeLocal({ previous: snapshot || null, snapshot: next, envelope: incoming, pairingKey: candidate, lastCheckedAt: new Date().toISOString() });
+  const entries = { previous: snapshot || null, snapshot: next, envelope: incoming, pairingKey: candidate, lastCheckedAt: new Date().toISOString() };
+  if (db) await writeLocal(entries);
+  else if (!writeRecovery(recoveryStore, candidate, incoming)) throw new Error("No se pudo guardar la copia. Abre el enlace en Safari normal y comprueba el espacio disponible.");
+  // An independent local ciphertext record recovers the session if one store
+  // is lost. A failed backup never invalidates the successful IndexedDB commit.
+  writeRecovery(recoveryStore, candidate, incoming);
   snapshot = next; envelope = incoming; pairingKey = candidate; pairingCandidate = null;
   render();
 }
@@ -158,19 +169,20 @@ async function sync(candidate = pairingCandidate || pairingKey) {
   try {
     await importPairingKey(candidate);
     if (!snapshotURL) {
-      const source = await fetch("./source.json").then((r) => { if (!r.ok) throw new Error("No se pudo leer el origen de la copia."); return r.json(); });
+      const source = await fetch("./source.json", { credentials: "omit", referrerPolicy: "no-referrer" }).then((r) => { if (!r.ok) throw new Error("No se pudo leer el origen de la copia."); return r.json(); });
       const url = new URL(source.snapshotURL, location.href);
       if (url.origin !== location.origin && (url.protocol !== "https:" || url.hostname !== "raw.githubusercontent.com")) throw new Error("El origen de la copia no es válido.");
       snapshotURL = url;
     }
     const url = new URL(snapshotURL); url.searchParams.set("t", String(Date.now()));
-    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    const response = await fetch(url, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error("La copia publicada todavía no está disponible.");
     const incoming = await response.json();
     if (envelope && candidate === pairingKey && incoming.data === envelope.data) {
-      await writeLocal({ lastCheckedAt: new Date().toISOString() });
+      if (db) await writeLocal({ lastCheckedAt: new Date().toISOString() });
     } else await acceptEnvelope(incoming, candidate);
     localStatus();
+    if (installationMode && offlineReady) await prepareInstallation(false);
   } catch (error) {
     const message = !navigator.onLine || error instanceof TypeError ? "Sin conexión con la copia publicada" :
       error.name === "TimeoutError" ? "La conexión está tardando. Se volverá a intentar." : error.message;
@@ -187,13 +199,51 @@ function download(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 function candidateFromInput() {
-  const value = $("#pairing-input")?.value.trim();
-  try { return new URLSearchParams(new URL(value).hash.slice(1)).get("k") || value; }
-  catch { return value; }
+  return keyFromLink($("#pairing-input")?.value);
 }
+
+function updateInstallationPanel() {
+  $("#installation").hidden = !installationMode;
+  $("#prepare-installation").disabled = !pairingKey || !offlineReady;
+  $("#copy-installation").disabled = !pairingKey;
+  $("#installation-state").textContent = installationPrepared ? "Instalación preparada · el icono conservará tu enlace privado." :
+    pairingKey && offlineReady ? "Tu copia está descargada. Preparando el acceso del icono…" : "Enlaza este iPhone y espera a que termine la descarga.";
+}
+
+async function requestPersistence() {
+  persistent = await navigator.storage?.persist?.().catch(() => false) || false;
+}
+
+async function prepareInstallation(userInitiated = true) {
+  if (!pairingKey || !offlineReady) throw new Error("Espera a que termine la primera descarga.");
+  installationMode = !standalone;
+  if (db) await writeLocal({ pairingKey });
+  writeRecovery(recoveryStore, pairingKey, envelope);
+  if (!standalone) history.replaceState(null, "", installationURL(location.href, pairingKey));
+  // Safari may use a separate store when adding to Home Screen. A device-only
+  // manifest puts the private fragment in the icon's own launch URL instead of
+  // relying on the Safari database being transferred.
+  const response = await fetch("./private-install.webmanifest", { cache: "no-store", credentials: "omit" });
+  if (response.ok) {
+    const manifest = await response.json();
+    if (keyFromLink(manifest.start_url) !== pairingKey) throw new Error("No se pudo verificar el acceso del icono.");
+    $("link[rel=manifest]").href = "./private-install.webmanifest";
+  }
+  // The public manifest omits start_url: if a browser bypasses SW interception
+  // when installing, its safe fallback is the current page's private fragment.
+  installationPrepared = true;
+  await requestPersistence();
+  updateInstallationPanel();
+  if (userInitiated) setStatus("Instalación preparada. En Safari: Compartir → Añadir a pantalla de inicio.", "good");
+}
+
 async function action(name) {
   if (name === "sync") return sync();
-  if (name === "pair") return sync(candidateFromInput());
+  if (name === "pair") {
+    if (!standalone) installationMode = true;
+    return sync(candidateFromInput());
+  }
+  if (name === "install") { await prepareInstallation(); $("#installation").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
   if (name === "export" && envelope) return download(new Blob([JSON.stringify(envelope)], { type: "application/json" }), `dashboard4-cifrado-${dayKey(new Date())}.json`);
   if (name === "import") return $("#import-backup").click();
   if (name === "persist") {
@@ -238,6 +288,11 @@ document.addEventListener("input", (event) => {
   searchTimer = setTimeout(() => { render(); const input = $("#library-query"); input.focus(); }, 200);
 });
 $("#sync").addEventListener("click", () => void sync());
+$("#prepare-installation").addEventListener("click", () => void prepareInstallation().catch((e) => setStatus(e.message, "warning")));
+$("#copy-installation").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(installationURL(location.href, pairingKey)); setStatus("Enlace privado copiado. Guárdalo para recuperar el acceso.", "good"); }
+  catch { setStatus("Mantén pulsado tu enlace privado del chat para copiarlo."); }
+});
 $("#close-reader").addEventListener("click", () => $("#reader").close());
 $("#save-document").addEventListener("click", () => {
   if (currentDocument) download(new Blob([currentDocument.content], { type: "text/plain;charset=utf-8" }), `${currentDocument.title.replace(/[^\p{L}\p{N} ._-]/gu, "").slice(0, 80)}.txt`);
@@ -257,19 +312,43 @@ $("#import-backup").addEventListener("change", async (event) => {
 
 async function boot() {
   try {
-    db = await openDB();
-    [snapshot, envelope, pairingKey] = await Promise.all([readLocal("snapshot"), readLocal("envelope"), readLocal("pairingKey")]);
+    try {
+      db = await openDB();
+      [snapshot, envelope, pairingKey] = await Promise.all([readLocal("snapshot"), readLocal("envelope"), readLocal("pairingKey")]);
+    } catch { db = null; }
+    const recovery = readRecovery(recoveryStore);
+    if ((!snapshot || !isPairingKey(pairingKey)) && recovery) {
+      try {
+        const restored = await decryptSnapshot(recovery.envelope, recovery.pairingKey);
+        snapshot = restored; envelope = recovery.envelope; pairingKey = recovery.pairingKey;
+        if (db) await writeLocal({ snapshot, envelope, pairingKey });
+      } catch { /* An invalid recovery record must never overwrite good data. */ }
+    }
+    if (snapshot && envelope && isPairingKey(pairingKey)) writeRecovery(recoveryStore, pairingKey, envelope);
     persistent = await navigator.storage?.persisted?.().catch(() => false) || false;
     render(); localStatus();
     if ("serviceWorker" in navigator && isSecureContext) {
       const registration = await navigator.serviceWorker.register("./sw.js", { scope: "./", updateViaCache: "none" });
       // ready resolves only once the entire shell has been cached successfully.
-      navigator.serviceWorker.ready.then(() => { offlineReady = true; localStatus(); if (tab === "settings") render(); });
+      navigator.serviceWorker.ready.then(async () => {
+        offlineReady = true; localStatus(); updateInstallationPanel();
+        if (standalone) await requestPersistence();
+        if (installationMode && pairingKey) await prepareInstallation(false).catch(() => {});
+        if (tab === "settings") render();
+      });
       void registration.update().catch(() => {});
     } else setStatus("La app necesita HTTPS para abrir sin conexión. Usa el enlace de instalación.", "warning");
     await sync();
   } catch (error) { render(); setStatus(error.message, "warning"); }
 }
+// A new SW claims an existing installation without changing its data. Refresh
+// once to load the complete updated shell instead of mixing cached versions.
+let changingController = false;
+const hadController = Boolean(navigator.serviceWorker?.controller);
+navigator.serviceWorker?.addEventListener("controllerchange", () => {
+  if (!changingController && hadController) { changingController = true; location.reload(); }
+  else if (installationMode && pairingKey && offlineReady) void prepareInstallation(false).catch(() => {});
+});
 window.addEventListener("online", () => void sync());
 window.addEventListener("offline", () => setStatus(snapshot ? "Sin conexión · copia local disponible" : "Sin conexión · enlaza cuando tengas red.", "warning"));
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void sync(); });
