@@ -204,7 +204,8 @@ function candidateFromInput() {
 
 function updateInstallationPanel() {
   $("#installation").hidden = !installationMode;
-  $("#prepare-installation").disabled = !pairingKey || !offlineReady;
+  $("#prepare-installation").disabled = !pairingKey || !offlineReady || installationPrepared;
+  $("#prepare-installation").textContent = installationPrepared ? "Instalación preparada ✓" : "Preparar instalación con acceso guardado";
   $("#copy-installation").disabled = !pairingKey;
   $("#installation-state").textContent = installationPrepared ? "Instalación preparada · el icono conservará tu enlace privado." :
     pairingKey && offlineReady ? "Tu copia está descargada. Preparando el acceso del icono…" : "Enlaza este iPhone y espera a que termine la descarga.";
@@ -341,13 +342,9 @@ async function boot() {
     await sync();
   } catch (error) { render(); setStatus(error.message, "warning"); }
 }
-// A new SW claims an existing installation without changing its data. Refresh
-// once to load the complete updated shell instead of mixing cached versions.
-let changingController = false;
-const hadController = Boolean(navigator.serviceWorker?.controller);
+// The SW reloads older shells when it activates, including the first version.
 navigator.serviceWorker?.addEventListener("controllerchange", () => {
-  if (!changingController && hadController) { changingController = true; location.reload(); }
-  else if (installationMode && pairingKey && offlineReady) void prepareInstallation(false).catch(() => {});
+  if (installationMode && pairingKey && offlineReady) void prepareInstallation(false).catch(() => {});
 });
 window.addEventListener("online", () => void sync());
 window.addEventListener("offline", () => setStatus(snapshot ? "Sin conexión · copia local disponible" : "Sin conexión · enlaza cuando tengas red.", "warning"));

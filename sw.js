@@ -1,4 +1,4 @@
-const CACHE = "dashboard4-iphone-a22512fd07fae444";
+const CACHE = "dashboard4-iphone-361cf024bb368bfb";
 const SHELL = ["./", "./index.html", "./app.css", "./app.mjs", "./model.mjs", "./protocol.mjs", "./session.mjs", "./source.json", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 function readDeviceKey() {
@@ -36,7 +36,23 @@ self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith("dashboard4-iphone-") && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
+  event.waitUntil((async () => {
+    await Promise.all((await caches.keys()).filter((key) => key.startsWith("dashboard4-iphone-") && key !== CACHE).map((key) => caches.delete(key)));
+    await self.clients.claim();
+    const key = await readDeviceKey().catch(() => null);
+    for (const client of await self.clients.matchAll({ type: "window" })) {
+      const url = new URL(client.url);
+      const scopePath = new URL(self.registration.scope).pathname;
+      if (url.origin !== self.location.origin || ![scopePath, `${scopePath}index.html`].includes(url.pathname)) continue;
+      // The first version removed the fragment and has no update listener.
+      // Reload it from this complete shell, restoring its verified device key.
+      if (/^[A-Za-z0-9_-]{43}$/.test(key || "") && !new URLSearchParams(url.hash.slice(1)).has("k")) {
+        url.hash = new URLSearchParams({ k: key, install: "1" }).toString();
+      }
+      // Start navigation but let activation finish before its fetch is handled.
+      void client.navigate(url.href).catch(() => {});
+    }
+  })());
 });
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
